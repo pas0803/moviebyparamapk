@@ -124,9 +124,9 @@ class MainActivity : AppCompatActivity() {
             try {
                 startActivity(intent)
                 return
-            } catch (_: ActivityNotFoundException) {
+            } catch (e: ActivityNotFoundException) {
                 // try the next one
-            } catch (_: SecurityException) {
+            } catch (e: SecurityException) {
                 // try the next one
             }
         }

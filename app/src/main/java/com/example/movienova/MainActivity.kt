@@ -92,6 +92,7 @@ class MainActivity : AppCompatActivity() {
         webView = findViewById(R.id.webView)
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
+        loadBlocklistInBackground()
 
         // Pop-up blocking: scripts may not open windows on their own,
         // and any window the page asks for is denied below
@@ -383,8 +384,73 @@ class MainActivity : AppCompatActivity() {
     private fun isAllowedHost(host: String): Boolean =
         ALLOWED_HOSTS.any { host == it || host.endsWith(".$it") }
 
-    private fun isBlockedHost(host: String): Boolean =
-        BLOCKED_HOSTS.any { host == it || host.endsWith(".$it") }
+    private fun isBlockedHost(host: String): Boolean {
+        if (host.isEmpty() || isAllowedHost(host)) return false
+        if (BLOCKED_HOSTS.any { host == it || host.endsWith(".$it") }) return true
+        // Check the host and each parent domain against the downloaded block lists
+        var h = host
+        while (h.contains('.')) {
+            if (downloadedBlocklist.contains(h)) return true
+            h = h.substring(h.indexOf('.') + 1)
+        }
+        return false
+    }
+
+    // Ad/tracker domains from public block lists, downloaded once a week
+    private val downloadedBlocklist: MutableSet<String> =
+        java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    private fun loadBlocklistInBackground() {
+        Thread {
+            try {
+                val file = java.io.File(filesDir, "blocklist.txt")
+                if (file.exists()) readBlocklist(file)
+                val weekMs = 7L * 24 * 60 * 60 * 1000
+                val stale = !file.exists() || System.currentTimeMillis() - file.lastModified() > weekMs
+                if (stale) {
+                    val tmp = java.io.File(filesDir, "blocklist.tmp")
+                    tmp.bufferedWriter().use { writer ->
+                        for (source in BLOCKLIST_URLS) {
+                            try {
+                                val conn = java.net.URL(source).openConnection() as java.net.HttpURLConnection
+                                conn.connectTimeout = 15000
+                                conn.readTimeout = 40000
+                                conn.inputStream.bufferedReader().use { reader ->
+                                    reader.forEachLine { line ->
+                                        writer.write(line)
+                                        writer.write("\n")
+                                    }
+                                }
+                                conn.disconnect()
+                            } catch (e: Exception) {
+                                // skip this source
+                            }
+                        }
+                    }
+                    if (tmp.length() > 10000L) {
+                        tmp.copyTo(file, overwrite = true)
+                        readBlocklist(file)
+                    }
+                    tmp.delete()
+                }
+            } catch (e: Exception) {
+                // block lists are optional; the built-in list still works
+            }
+        }.start()
+    }
+
+    private fun readBlocklist(file: java.io.File) {
+        val whitespace = Regex("\\s+")
+        file.forEachLine { line ->
+            val t = line.trim()
+            if (t.isEmpty() || t.startsWith("#")) return@forEachLine
+            val parts = t.split(whitespace)
+            val domain = (if (parts.size >= 2) parts[1] else parts[0]).lowercase()
+            if (domain.contains('.') && !domain.contains('/') && domain != "localhost") {
+                downloadedBlocklist.add(domain)
+            }
+        }
+    }
 
     companion object {
         private const val START_URL = "https://movienova.sc/"
@@ -416,6 +482,12 @@ class MainActivity : AppCompatActivity() {
   clean();
 })();
 """
+
+        // Public ad/tracker block lists (downloaded by the app, refreshed weekly)
+        private val BLOCKLIST_URLS = listOf(
+            "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=nohtml&showintro=0&mimetype=plaintext",
+            "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
+        )
 
         // Websites the app is allowed to navigate to (add more here if the site needs them)
         private val ALLOWED_HOSTS = listOf("movienova.sc")

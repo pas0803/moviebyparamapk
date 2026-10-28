@@ -63,6 +63,11 @@ class MainActivity : AppCompatActivity() {
     private var detectedUrl: String? = null
     private var castedThisPage = false
 
+    // All video addresses seen on this page (the user picks which one to cast)
+    private val candidates: MutableList<String> =
+        java.util.Collections.synchronizedList(ArrayList<String>())
+    private var pickerShowing = false
+
     private val sessionListener = object : SessionManagerListener<CastSession> {
         override fun onSessionStarted(session: CastSession, sessionId: String) {
             castedThisPage = false
@@ -108,6 +113,7 @@ class MainActivity : AppCompatActivity() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 detectedUrl = null
                 castedThisPage = false
+                candidates.clear()
                 seenHosts.clear()
             }
 
@@ -153,7 +159,11 @@ class MainActivity : AppCompatActivity() {
                     if (path.endsWith(".m3u8") || path.endsWith(".mp4") ||
                         path.endsWith(".mpd") || path.contains("videoplayback")
                     ) {
-                        detectedUrl = uri.toString()
+                        val found = uri.toString()
+                        detectedUrl = found
+                        if (!candidates.contains(found) && candidates.size < 15) {
+                            candidates.add(found)
+                        }
                         runOnUiThread { maybeAutoCast() }
                     }
                 }
@@ -172,13 +182,8 @@ class MainActivity : AppCompatActivity() {
             routeButton.visibility = View.GONE
         }
 
-        // Backup: mirror the whole phone screen
-        val mirrorButton = findViewById<View>(R.id.castButton)
-        mirrorButton.setOnClickListener {
-            openInChrome()
-        }
-        // Long-press: troubleshooting info (video address + other sites contacted)
-        mirrorButton.setOnLongClickListener {
+        // Long-press the cast button: troubleshooting info
+        routeButton.setOnLongClickListener {
             showDiagnostics()
             true
         }
@@ -225,9 +230,9 @@ class MainActivity : AppCompatActivity() {
         val session = castContext?.sessionManager?.currentCastSession
         if (session == null || !session.isConnected) return
 
-        val sniffed = detectedUrl
-        if (sniffed != null) {
-            sendToCast(session, sniffed)
+        // Let the user choose which detected video to send (ads can show up here too)
+        if (candidates.isNotEmpty()) {
+            showPicker(session)
             return
         }
 
@@ -250,6 +255,25 @@ class MainActivity : AppCompatActivity() {
                 ).show()
             }
         }
+    }
+
+    // Lists the detected videos so the user can pick the real movie
+    private fun showPicker(session: CastSession) {
+        if (pickerShowing) return
+        val urls = synchronized(candidates) { candidates.toList() }
+        if (urls.isEmpty()) return
+        val labels = urls.map { u ->
+            val uri = Uri.parse(u)
+            val file = uri.lastPathSegment ?: "video"
+            "${uri.host ?: "?"}  -  $file"
+        }.toTypedArray()
+        pickerShowing = true
+        AlertDialog.Builder(this)
+            .setTitle("Choose the video to cast")
+            .setItems(labels) { _, index -> sendToCast(session, urls[index]) }
+            .setNegativeButton("Cancel", null)
+            .setOnDismissListener { pickerShowing = false }
+            .show()
     }
 
     private fun sendToCast(session: CastSession, url: String) {
@@ -405,7 +429,8 @@ class MainActivity : AppCompatActivity() {
             "taboola.com", "outbrain.com", "mgid.com", "revcontent.com",
             "ad-maven.com", "admaven.com", "a-ads.com", "adcash.com",
             "popunderjs.com", "pushwhy.com", "profitableratecpm.com",
-            "highperformanceformat.com", "effectivegatecpm.com", "ads.yahoo.com"
+            "highperformanceformat.com", "effectivegatecpm.com", "ads.yahoo.com",
+            "saffronandsky.space"
         )
     }
 }

@@ -26,11 +26,37 @@ import com.google.android.gms.cast.framework.CastSession
 import com.google.android.gms.cast.framework.SessionManagerListener
 import org.json.JSONTokener
 import java.io.ByteArrayInputStream
+import androidx.appcompat.app.AlertDialog
+import com.google.android.gms.cast.MediaStatus
+import com.google.android.gms.cast.framework.media.RemoteMediaClient
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private var castContext: CastContext? = null
+
+    // Third-party websites contacted by the current page (for troubleshooting)
+    private val seenHosts: MutableSet<String> =
+        java.util.Collections.synchronizedSet(LinkedHashSet<String>())
+    private var lastCastUrl: String? = null
+    private var currentClient: RemoteMediaClient? = null
+
+    private val mediaCallback = object : RemoteMediaClient.Callback() {
+        override fun onStatusUpdated() {
+            val status = currentClient?.mediaStatus ?: return
+            if (status.playerState == MediaStatus.PLAYER_STATE_IDLE &&
+                status.idleReason == MediaStatus.IDLE_REASON_ERROR
+            ) {
+                castedThisPage = false
+                val host = Uri.parse(lastCastUrl ?: "").host ?: "unknown"
+                Toast.makeText(
+                    this@MainActivity,
+                    "TV could not load this video (from $host). Try the mirror button.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
 
     // Latest video stream address seen in the page's network traffic
     @Volatile
@@ -82,6 +108,12 @@ class MainActivity : AppCompatActivity() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 detectedUrl = null
                 castedThisPage = false
+                seenHosts.clear()
+            }
+
+            override fun onPageFinished(view: WebView?, url: String?) {
+                // Remove fake "storage full" style overlays
+                view?.evaluateJavascript(CLEAN_JS, null)
             }
 
             // Block redirects away from the site (ad pages, other apps)
@@ -95,7 +127,7 @@ class MainActivity : AppCompatActivity() {
                 val host = uri.host?.lowercase() ?: ""
                 val allowed = (scheme == "http" || scheme == "https") && isAllowedHost(host)
                 if (!allowed) {
-                    Toast.makeText(this@MainActivity, "Redirect blocked", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Redirect blocked: $host", Toast.LENGTH_SHORT).show()
                 }
                 return !allowed
             }
@@ -114,8 +146,13 @@ class MainActivity : AppCompatActivity() {
                             "text/plain", "utf-8", ByteArrayInputStream(ByteArray(0))
                         )
                     }
+                    if (host.isNotEmpty() && !isAllowedHost(host) && seenHosts.size < 80) {
+                        seenHosts.add(host)
+                    }
                     val path = uri.path?.lowercase() ?: ""
-                    if (path.endsWith(".m3u8") || path.endsWith(".mp4") || path.endsWith(".mpd")) {
+                    if (path.endsWith(".m3u8") || path.endsWith(".mp4") ||
+                        path.endsWith(".mpd") || path.contains("videoplayback")
+                    ) {
                         detectedUrl = uri.toString()
                         runOnUiThread { maybeAutoCast() }
                     }
@@ -136,8 +173,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         // Backup: mirror the whole phone screen
-        findViewById<View>(R.id.castButton).setOnClickListener {
+        val mirrorButton = findViewById<View>(R.id.castButton)
+        mirrorButton.setOnClickListener {
             openScreenMirror()
+        }
+        // Long-press: troubleshooting info (video address + other sites contacted)
+        mirrorButton.setOnLongClickListener {
+            showDiagnostics()
+            true
         }
 
         // Back button: tap = previous page, long-press = home page
@@ -212,6 +255,12 @@ class MainActivity : AppCompatActivity() {
     private fun sendToCast(session: CastSession, url: String) {
         val client = session.remoteMediaClient ?: return
         castedThisPage = true
+        lastCastUrl = url
+
+        // Report playback errors from the TV
+        currentClient?.unregisterCallback(mediaCallback)
+        currentClient = client
+        client.registerCallback(mediaCallback)
 
         val path = Uri.parse(url).path?.lowercase() ?: ""
         val type = when {
@@ -241,7 +290,23 @@ class MainActivity : AppCompatActivity() {
             "document.querySelectorAll('video').forEach(function(v){v.pause();})",
             null
         )
-        Toast.makeText(this, "Sending video to TV...", Toast.LENGTH_SHORT).show()
+        val shortName = Uri.parse(url).host ?: "video"
+        Toast.makeText(this, "Sending video to TV (from $shortName)...", Toast.LENGTH_LONG).show()
+    }
+
+    // Shows the detected video address and other sites the page contacted
+    private fun showDiagnostics() {
+        val hosts = synchronized(seenHosts) { seenHosts.toList() }
+        val text = StringBuilder()
+        text.append("Video found:\n").append(detectedUrl ?: "none").append("\n\n")
+        text.append("Last sent to TV:\n").append(lastCastUrl ?: "nothing").append("\n\n")
+        text.append("Other sites contacted:\n")
+        if (hosts.isEmpty()) text.append("none") else hosts.forEach { text.append(it).append("\n") }
+        AlertDialog.Builder(this)
+            .setTitle("Troubleshooting info")
+            .setMessage(text.toString())
+            .setPositiveButton("OK", null)
+            .show()
     }
 
     // Opens Android's built-in "Cast screen" picker (mirrors the whole screen)
@@ -284,6 +349,34 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val START_URL = "https://movienova.sc/"
+
+        // Removes full-screen scam-style overlays ("storage full", "Google Drive", etc.)
+        private const val CLEAN_JS = """
+(function(){
+  if (window.__mbpClean) return;
+  window.__mbpClean = true;
+  var re = /(disk|storage)[^.]{0,40}(full|low|almost)|(full|low|almost)[^.]{0,40}(disk|storage)|google drive|icloud/i;
+  var timer = null;
+  function clean(){
+    timer = null;
+    var els = document.querySelectorAll('div,section,aside,iframe');
+    for (var i = 0; i < els.length; i++) {
+      var e = els[i];
+      var cs = getComputedStyle(e);
+      if (cs.position === 'fixed' || cs.position === 'absolute') {
+        var z = parseInt(cs.zIndex, 10) || 0;
+        if (z >= 100) {
+          var t = (e.innerText || '').slice(0, 400);
+          if (re.test(t)) { e.remove(); }
+        }
+      }
+    }
+  }
+  function schedule(){ if (!timer) timer = setTimeout(clean, 400); }
+  new MutationObserver(schedule).observe(document.documentElement, {childList: true, subtree: true});
+  clean();
+})();
+"""
 
         // Websites the app is allowed to navigate to (add more here if the site needs them)
         private val ALLOWED_HOSTS = listOf("movienova.sc")

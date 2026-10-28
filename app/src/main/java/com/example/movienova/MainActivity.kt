@@ -30,6 +30,20 @@ class MainActivity : AppCompatActivity() {
             openCastPicker()
         }
 
+        // Back button: tap = previous page, long-press = home page
+        val backButton = findViewById<View>(R.id.backButton)
+        backButton.setOnClickListener {
+            if (webView.canGoBack()) {
+                webView.goBack()
+            } else {
+                webView.loadUrl(START_URL)
+            }
+        }
+        backButton.setOnLongClickListener {
+            webView.loadUrl(START_URL)
+            true
+        }
+
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 if (webView.canGoBack()) {
@@ -41,7 +55,7 @@ class MainActivity : AppCompatActivity() {
         })
 
         if (savedInstanceState == null) {
-            webView.loadUrl("https://movienova.sc/")
+            webView.loadUrl(START_URL)
         } else {
             webView.restoreState(savedInstanceState)
         }
@@ -63,5 +77,9 @@ class MainActivity : AppCompatActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         webView.saveState(outState)
+    }
+
+    companion object {
+        private const val START_URL = "https://movienova.sc/"
     }
 }

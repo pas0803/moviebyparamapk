@@ -175,7 +175,7 @@ class MainActivity : AppCompatActivity() {
         // Backup: mirror the whole phone screen
         val mirrorButton = findViewById<View>(R.id.castButton)
         mirrorButton.setOnClickListener {
-            openScreenMirror()
+            openInChrome()
         }
         // Long-press: troubleshooting info (video address + other sites contacted)
         mirrorButton.setOnLongClickListener {
@@ -307,6 +307,21 @@ class MainActivity : AppCompatActivity() {
             .setMessage(text.toString())
             .setPositiveButton("OK", null)
             .show()
+    }
+
+    // Opens the current page in Chrome, where the site's own cast button works
+    private fun openInChrome() {
+        val url = webView.url ?: START_URL
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+        try {
+            startActivity(Intent(intent).setPackage("com.android.chrome"))
+        } catch (e: Exception) {
+            try {
+                startActivity(intent)
+            } catch (e2: Exception) {
+                Toast.makeText(this, "No browser found", Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     // Opens Android's built-in "Cast screen" picker (mirrors the whole screen)
